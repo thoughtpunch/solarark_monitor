@@ -1,23 +1,35 @@
 # SolArk Monitor
 
-Battery depletion forecasting and alerting for Sol-Ark solar systems. Built for off-grid living.
+Battery depletion forecasting and alerting for off-grid Sol-Ark solar systems.
 
-## What it does
+Monitors your Sol-Ark battery system 24/7, predicts overnight depletion using weather forecasts and historical usage patterns, and sends advance alerts so you can act before losing power.
 
-- Polls your Sol-Ark system every 5 minutes via the SolArk Cloud API
-- Predicts whether your battery will last until solar becomes usable the next morning
-- Sends macOS notifications and WhatsApp alerts when battery is trending towards depletion
-- Stores all readings in SQLite for historical analysis
-- Uses weather forecasts to adjust predictions (cloudy days = later usable solar)
-- Web dashboard with real-time stats, charts, and hourly usage breakdown
-- macOS menu bar widget
-- Historical data backfill and outage analysis
+## Features
 
-## The problem it solves
+- **Real-time monitoring** — polls SolArk Cloud API every 5 minutes
+- **Overnight forecast** — starting at 4pm, predicts if battery will survive until solar is usable the next morning
+- **Smart alerts** — macOS notifications with escalating severity and independent cooldowns:
+  - 🔥 Heavy evening drain (>10%/hr after sunset)
+  - ⚠️ Low battery at sunset (<70% at 6pm)
+  - 🚨 Low battery at bedtime (<50% at 10pm)
+  - 🔧 Battery not charging when solar is available
+  - 🚨 Critical SOC (<25%)
+  - ☁️ No solar production during daytime
+  - 🔮 Overnight depletion forecast (watch → warning → critical)
+- **WhatsApp alerts** — optional, for when you're away from your laptop
+- **SQLite storage** — every reading stored for historical analysis
+- **Weather-aware** — uses OpenWeatherMap forecasts to adjust predictions (cloudy = solar delayed to 10am)
+- **Web dashboard** — Vue.js + Chart.js with SOC/power charts, hourly usage, peak stats
+- **macOS menu bar widget** — battery %, forecast risk, weather with emojis
+- **Historical backfill** — import all available data from MySolArk
+- **Outage analysis** — find every past outage, back-predict causes, simulate capacity upgrades
+- **Auto-start** — launchd services for monitor, web server, and widget (all singleton-safe)
 
-On rainy days, the inverter safety cuts off at 20% SOC. Solar doesn't produce enough to recover above 20% until 9-10am on cloudy days. You lose power from ~4-7am until ~10am. This monitor warns you **the evening before** so you can reduce consumption or prepare.
+## The Problem
 
-## Quick start
+On cloudy/rainy days, the inverter safety cuts off at 20% SOC. Solar doesn't produce enough to recover until 9-10am. You lose power from ~4-7am until ~10am. This monitor warns you **the evening before** so you can reduce consumption.
+
+## Quick Start
 
 ```bash
 git clone https://github.com/thoughtpunch/solarark_monitor.git
@@ -26,78 +38,63 @@ python3 -m venv venv
 source venv/bin/activate
 pip install -e .
 
-# Configure — fill in your MySolArk credentials and location
 cp .env.example .env
-# Edit .env
+# Edit .env with your MySolArk credentials and location
 
-# Run
-python -m solar_monitor          # Monitor (checks every 5 min)
+python -m solar_monitor          # Start monitoring
 python -m solar_monitor.web      # Web dashboard at http://localhost:8077
+cd widget && swift SolarWidget.swift  # Menu bar widget
 ```
 
 ## Configuration (.env)
 
 ```
+# Required
 SOLARK_USERNAME=your_email@example.com
 SOLARK_PASSWORD=your_password
 SOLARK_PLANT_ID=123456
 LATITUDE=9.27
 LONGITUDE=-83.79
+TZ_OFFSET=-6
 OPENWEATHER_API_KEY=your_key
+
+# Battery config
+BATTERY_CAPACITY_WH=15000         # Total Wh (e.g. 3x 5kWh = 15000)
+BATTERY_SAFETY_CUTOFF=20          # Inverter cutoff %
 
 # Optional
 WHATSAPP_PHONE=+1234567890
-CHECK_INTERVAL=300
+CHECK_INTERVAL=300                # Seconds between checks
 WEB_PORT=8077
-PLANT_CREATED=2025-01-01
+PLANT_CREATED=2025-01-01          # For backfill start date
 ```
 
-Get your plant ID from your MySolArk dashboard URL: `https://www.mysolark.com/plants/overview/{PLANT_ID}/2`
+Find your plant ID in your MySolArk dashboard URL: `https://www.mysolark.com/plants/overview/{PLANT_ID}/2`
 
-Get a free OpenWeatherMap API key at https://openweathermap.org/api (or leave blank to skip weather features).
+## Auto-Start (macOS launchd)
 
-## Run as a service (macOS launchd)
-
-Edit `com.solar-monitor.plist` to set the correct paths for your system, then:
+Edit the plist files to set your paths, then:
 
 ```bash
+# Install all three services
 cp com.solar-monitor.plist ~/Library/LaunchAgents/
+# Create web and widget plists similarly (see docs)
+
+# Load
 launchctl load ~/Library/LaunchAgents/com.solar-monitor.plist
+launchctl load ~/Library/LaunchAgents/com.solar-monitor-web.plist
+launchctl load ~/Library/LaunchAgents/com.solar-monitor-widget.plist
 
 # Check status
 launchctl list | grep solar
 
-# View logs
+# Logs
 tail -f logs/monitor.log
-
-# Stop
-launchctl unload ~/Library/LaunchAgents/com.solar-monitor.plist
 ```
 
-## Menu bar widget (macOS)
+All services auto-start on login, auto-restart on crash, and prevent duplicate instances.
 
-```bash
-cd widget && swift SolarWidget.swift
-```
-
-Shows battery %, charging status, forecast risk level, and weather in the macOS menu bar.
-
-## Web dashboard
-
-```bash
-python -m solar_monitor.web
-# Open http://localhost:8077
-```
-
-Shows:
-- Battery SOC, solar production, load, hours remaining
-- Forecast risk level (ok / watch / warning / critical)
-- 24-hour SOC and power charts
-- Average usage by hour of day
-- Peak and average load stats
-- Weather conditions
-
-## Historical data & analysis
+## Historical Analysis
 
 ```bash
 # Backfill all available history from MySolArk
@@ -107,41 +104,67 @@ python -m solar_monitor.backfill
 python -m solar_monitor.analyze
 ```
 
-The analyzer finds every historical outage, back-predicts what caused it, and simulates whether adding battery capacity would have prevented it.
+The analyzer finds every historical outage, determines what SOC and load conditions led to it, and simulates whether adding battery capacity would have prevented it.
 
-## Overnight forecast
+## Web Dashboard
 
-Starting at 4pm each day, the monitor runs an overnight forecast:
+```bash
+python -m solar_monitor.web
+# http://localhost:8077
+```
 
-1. Takes current SOC + historical average overnight load + tomorrow's weather forecast
-2. Calculates: "From sunset to usable-solar, do I have enough battery?"
-3. Sends alerts with specific recommendations (e.g., "Reduce load to 400W to survive the night")
+- Battery SOC, solar production, load, hours remaining
+- Forecast risk level (ok / watch / warning / critical)
+- 24-hour SOC and power charts
+- Average usage by hour of day
+- Peak and average load stats
+- Weather conditions
 
-Risk levels:
-- **ok**: Comfortably lasting the night
-- **watch**: Marginal — consider reducing load
-- **warning**: Battery will likely run out — reduce load now
-- **critical**: Battery WILL run out — shut down non-essentials
-
-## Project structure
+## Project Structure
 
 ```
 src/solar_monitor/
-  __init__.py       # Package init
-  __main__.py       # Entry point
-  monitor.py        # Main monitoring loop
-  forecast.py       # Battery depletion prediction
-  alerts.py         # macOS + WhatsApp notifications
-  database.py       # SQLite storage and queries
-  weather.py        # OpenWeatherMap integration
-  web.py            # Web API server
-  backfill.py       # Historical data import
-  analyze.py        # Outage analysis & capacity planning
+  __init__.py       Package init (loads .env)
+  __main__.py       Entry point
+  monitor.py        Main monitoring loop
+  forecast.py       Battery depletion + overnight prediction
+  alerts.py         macOS notifications, WhatsApp, situational alerts
+  database.py       SQLite storage and query functions
+  weather.py        OpenWeatherMap integration
+  web.py            HTTP API server for dashboard
+  backfill.py       Historical data import from SolArk API
+  analyze.py        Outage analysis & capacity planning
 web/
-  index.html        # Vue.js dashboard (single file)
+  index.html        Vue 3 + Chart.js dashboard (single file)
 widget/
-  SolarWidget.swift # macOS menu bar widget
+  SolarWidget.swift macOS menu bar widget
 ```
+
+## API Endpoints (Web Server)
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /` | Dashboard |
+| `GET /api/current` | Current state (SOC, power, forecast, weather) |
+| `GET /api/readings` | Last 24h of readings |
+| `GET /api/readings/{hours}` | Last N hours of readings |
+| `GET /api/hourly` | Average usage by hour of day |
+| `GET /api/peak` | 7-day peak and average stats |
+| `GET /api/summary` | Today's summary |
+| `GET /api/weather` | 7-day weather history |
+
+## SolArk Cloud API
+
+Uses the same API as the MySolArk web dashboard:
+
+| Endpoint | Description |
+|----------|-------------|
+| `POST /oauth/token` | Login (password grant, client_id=csp-web) |
+| `GET /api/v1/plant/energy/{id}/flow` | SOC, power flows, charge direction |
+| `GET /api/v1/plant/{id}/realtime` | Today/month/year production stats |
+| `GET /api/v1/plant/energy/{id}/day?date=YYYY-MM-DD` | 5-min interval time series |
+| `GET /api/v1/plant/energy/{id}/month?date=YYYY-MM` | Daily totals per month |
+| `GET /api/v1/plant/energy/{id}/generation/use` | Daily summary (PV, load, battery, grid) |
 
 ## License
 
