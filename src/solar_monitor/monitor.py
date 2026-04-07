@@ -8,7 +8,6 @@ import json
 import logging
 from datetime import datetime
 from dataclasses import asdict
-from dotenv import load_dotenv
 from pysolark import SolArkClient
 
 from solar_monitor.forecast import forecast_battery, forecast_overnight
@@ -21,8 +20,6 @@ from solar_monitor.database import (
     get_average_nighttime_load,
 )
 from solar_monitor.weather import get_current_weather, get_tomorrow_cloud_forecast
-
-load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -173,7 +170,15 @@ def run_overnight_forecast(soc: float, weather: dict | None) -> object | None:
 def check_battery(client: SolArkClient) -> None:
     """Fetch current data, store it, forecast, and alert."""
     try:
-        flow = client.get_plant_energy_flow(PLANT_ID)
+        try:
+            flow = client.get_plant_energy_flow(PLANT_ID)
+        except Exception as auth_err:
+            if "401" in str(auth_err) or "Unauthorized" in str(auth_err):
+                logger.info("Token expired, re-authenticating...")
+                client.login()
+                flow = client.get_plant_energy_flow(PLANT_ID)
+            else:
+                raise
         realtime = client.get_plant_realtime(PLANT_ID)
 
         soc = flow.soc

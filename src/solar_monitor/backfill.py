@@ -10,11 +10,8 @@ import time
 import logging
 import requests
 from datetime import datetime, timedelta
-from dotenv import load_dotenv
 
 from solar_monitor.database import init_db, get_db
-
-load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
