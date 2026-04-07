@@ -3,6 +3,8 @@
 
 import json
 import os
+import signal
+import subprocess
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from solar_monitor.database import (
     get_recent_readings,
@@ -76,7 +78,25 @@ class ReusableHTTPServer(HTTPServer):
     allow_reuse_port = True
 
 
+def _kill_existing():
+    """Kill any existing solar_monitor.web processes (prevent duplicates)."""
+    my_pid = os.getpid()
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", "solar_monitor.web"],
+            capture_output=True,
+            text=True,
+        )
+        for line in result.stdout.strip().split("\n"):
+            pid = int(line.strip()) if line.strip() else 0
+            if pid and pid != my_pid:
+                os.kill(pid, signal.SIGTERM)
+    except Exception:
+        pass
+
+
 def main():
+    _kill_existing()
     init_db()
     server = ReusableHTTPServer(("0.0.0.0", WEB_PORT), SolarAPIHandler)
     print(f"Solar Monitor dashboard: http://localhost:{WEB_PORT}")

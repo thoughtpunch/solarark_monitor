@@ -210,6 +210,22 @@ class SolarMenuBar: NSObject, NSApplicationDelegate {
     }
 }
 
+// Kill any existing instances before starting
+let myPid = ProcessInfo.processInfo.processIdentifier
+let task = Process()
+task.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+task.arguments = ["-f", "SolarWidget"]
+let pipe = Pipe()
+task.standardOutput = pipe
+try? task.run()
+task.waitUntilExit()
+let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+for line in output.split(separator: "\n") {
+    if let pid = Int32(line.trimmingCharacters(in: .whitespaces)), pid != myPid {
+        kill(pid, SIGTERM)
+    }
+}
+
 let app = NSApplication.shared
 let delegate = SolarMenuBar()
 app.delegate = delegate
