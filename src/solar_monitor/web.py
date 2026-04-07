@@ -71,9 +71,14 @@ class SolarAPIHandler(SimpleHTTPRequestHandler):
         pass  # Quiet logging
 
 
+class ReusableHTTPServer(HTTPServer):
+    allow_reuse_address = True
+    allow_reuse_port = True
+
+
 def main():
     init_db()
-    server = HTTPServer(("0.0.0.0", WEB_PORT), SolarAPIHandler)
+    server = ReusableHTTPServer(("0.0.0.0", WEB_PORT), SolarAPIHandler)
     print(f"Solar Monitor dashboard: http://localhost:{WEB_PORT}")
     server.serve_forever()
 
