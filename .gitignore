@@ -1,0 +1,12 @@
+venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.env
+.DS_Store
+solar_monitor.db
+widget_data.json
+logs/
+*.log
+*.err
+src/solar_monitor.egg-info/

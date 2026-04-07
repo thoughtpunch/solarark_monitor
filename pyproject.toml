@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "solar-monitor"
+version = "0.1.0"
+description = "Battery depletion forecasting and alerting for Sol-Ark solar systems"
+requires-python = ">=3.11"
+dependencies = [
+    "pysolark>=0.1.0",
+    "requests>=2.31",
+    "python-dotenv>=1.0",
+]
+
+[project.scripts]
+solar-monitor = "solar_monitor.monitor:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

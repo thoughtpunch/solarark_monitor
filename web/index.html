@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Solar Monitor</title>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      background: #0a0e17;
+      color: #e0e6ed;
+      min-height: 100vh;
+    }
+    .container { max-width: 1100px; margin: 0 auto; padding: 20px; }
+    h1 { font-size: 1.5rem; font-weight: 600; margin-bottom: 20px; color: #f0f4f8; }
+    h1 span { color: #f59e0b; }
+
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin-bottom: 24px; }
+
+    .card {
+      background: #151b2b;
+      border: 1px solid #1e293b;
+      border-radius: 12px;
+      padding: 20px;
+    }
+    .card-label { font-size: 0.8rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
+    .card-value { font-size: 2rem; font-weight: 700; }
+    .card-sub { font-size: 0.85rem; color: #94a3b8; margin-top: 4px; }
+
+    .soc-ok { color: #22c55e; }
+    .soc-watch { color: #f59e0b; }
+    .soc-warning { color: #f97316; }
+    .soc-critical { color: #ef4444; }
+
+    .status-badge {
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .badge-ok { background: #064e3b; color: #34d399; }
+    .badge-watch { background: #451a03; color: #fbbf24; }
+    .badge-warning { background: #431407; color: #fb923c; }
+    .badge-critical { background: #450a0a; color: #f87171; animation: pulse 2s infinite; }
+
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+    .chart-container {
+      background: #151b2b;
+      border: 1px solid #1e293b;
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 24px;
+    }
+    .chart-title { font-size: 0.9rem; color: #94a3b8; margin-bottom: 12px; }
+    canvas { max-height: 300px; }
+
+    .hourly-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+    }
+    .hourly-table th { text-align: left; color: #64748b; padding: 8px; border-bottom: 1px solid #1e293b; }
+    .hourly-table td { padding: 8px; border-bottom: 1px solid #1e293b22; }
+    .hourly-bar {
+      height: 8px;
+      background: #3b82f6;
+      border-radius: 4px;
+      transition: width 0.3s;
+    }
+
+    .weather-info { display: flex; gap: 16px; flex-wrap: wrap; }
+    .weather-item { flex: 1; min-width: 120px; }
+
+    .updated { text-align: center; color: #475569; font-size: 0.75rem; margin-top: 20px; }
+    .loading { text-align: center; padding: 60px; color: #64748b; }
+  </style>
+</head>
+<body>
+<div id="app" class="container">
+  <h1><span>&#9728;</span> Solar Monitor</h1>
+
+  <div v-if="loading" class="loading">Loading...</div>
+  <template v-else>
+    <!-- Status Cards -->
+    <div class="grid">
+      <div class="card">
+        <div class="card-label">Battery</div>
+        <div class="card-value" :class="socClass">{{ current.soc?.toFixed(0) ?? '--' }}%</div>
+        <div class="card-sub">
+          <span v-if="current.is_charging">Charging at {{ current.battery_power }}W</span>
+          <span v-else>Draining at {{ current.battery_power }}W</span>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-label">Solar Production</div>
+        <div class="card-value" style="color:#f59e0b">{{ current.pv_power ?? '--' }}W</div>
+        <div class="card-sub">Load: {{ current.load_power ?? '--' }}W</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Hours Left</div>
+        <div class="card-value" :class="socClass">{{ hoursLeftStr }}</div>
+        <div class="card-sub">at current usage</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Forecast</div>
+        <div class="card-value">
+          <span :class="'status-badge badge-' + (forecast.risk_level || 'ok')">
+            {{ forecast.risk_level || 'ok' }}
+          </span>
+        </div>
+        <div class="card-sub">SOC at sunrise: {{ forecast.soc_at_sunrise?.toFixed(0) ?? '--' }}%</div>
+      </div>
+    </div>
+
+    <!-- Weather -->
+    <div class="card" style="margin-bottom:24px" v-if="weather">
+      <div class="card-label">Weather</div>
+      <div class="weather-info" style="margin-top:8px">
+        <div class="weather-item">
+          <div style="font-size:1.2rem">{{ weather.description }}</div>
+        </div>
+        <div class="weather-item">
+          <div class="card-label">Temp</div>
+          <div>{{ weather.temp?.toFixed(1) }}°C</div>
+        </div>
+        <div class="weather-item">
+          <div class="card-label">Clouds</div>
+          <div>{{ weather.clouds }}%</div>
+        </div>
+        <div class="weather-item">
+          <div class="card-label">Humidity</div>
+          <div>{{ weather.humidity }}%</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SOC Chart -->
+    <div class="chart-container">
+      <div class="chart-title">Battery SOC — Last 24 Hours</div>
+      <canvas ref="socChart"></canvas>
+    </div>
+
+    <!-- Power Chart -->
+    <div class="chart-container">
+      <div class="chart-title">Power — Last 24 Hours</div>
+      <canvas ref="powerChart"></canvas>
+    </div>
+
+    <!-- Avg Usage by Hour -->
+    <div class="card" style="margin-bottom:24px">
+      <div class="card-label" style="margin-bottom:12px">Average Usage by Hour of Day</div>
+      <table class="hourly-table">
+        <thead><tr><th>Hour</th><th>Avg Load (W)</th><th>Peak (W)</th><th></th></tr></thead>
+        <tbody>
+          <tr v-for="h in hourly" :key="h.hour">
+            <td>{{ String(h.hour).padStart(2,'0') }}:00</td>
+            <td>{{ h.avg_load?.toFixed(0) }}</td>
+            <td>{{ h.peak_load?.toFixed(0) }}</td>
+            <td style="width:40%"><div class="hourly-bar" :style="{width: (h.avg_load / maxHourly * 100) + '%'}"></div></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Peak Stats -->
+    <div class="grid">
+      <div class="card">
+        <div class="card-label">7-Day Peak Load</div>
+        <div class="card-value" style="color:#f87171">{{ peak.peak_load_w?.toFixed(0) ?? '--' }}W</div>
+        <div class="card-sub" v-if="peak.peak_time">{{ peak.peak_time }}</div>
+      </div>
+      <div class="card">
+        <div class="card-label">7-Day Avg Load</div>
+        <div class="card-value" style="color:#60a5fa">{{ peak.avg_load_w?.toFixed(0) ?? '--' }}W</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Avg Night Load</div>
+        <div class="card-value" style="color:#a78bfa">{{ summary.avg_load?.toFixed(0) ?? '--' }}W</div>
+        <div class="card-sub">Today's generation: {{ summary.total_generation?.toFixed(1) ?? '--' }}kWh</div>
+      </div>
+    </div>
+
+    <div class="updated">Updated: {{ current.updated || 'never' }} — refreshes every 60s</div>
+  </template>
+</div>
+
+<script>
+const { createApp, ref, computed, onMounted, onUnmounted } = Vue;
+
+createApp({
+  setup() {
+    const loading = ref(true);
+    const current = ref({});
+    const forecast = ref({});
+    const weather = ref(null);
+    const readings = ref([]);
+    const hourly = ref([]);
+    const peak = ref({});
+    const summary = ref({});
+    const socChart = ref(null);
+    const powerChart = ref(null);
+    let socChartInstance = null;
+    let powerChartInstance = null;
+    let interval = null;
+
+    const socClass = computed(() => {
+      const soc = current.value.soc ?? 100;
+      if (soc >= 50) return 'soc-ok';
+      if (soc >= 30) return 'soc-watch';
+      if (soc >= 20) return 'soc-warning';
+      return 'soc-critical';
+    });
+
+    const hoursLeftStr = computed(() => {
+      const h = forecast.value.hours_until_empty;
+      if (!h || h > 100) return '99+';
+      return `${Math.floor(h)}h${Math.floor((h % 1) * 60)}m`;
+    });
+
+    const maxHourly = computed(() => Math.max(...hourly.value.map(h => h.avg_load || 0), 1));
+
+    async function fetchAll() {
+      try {
+        const [cur, rd, hr, pk, sm] = await Promise.all([
+          fetch('/api/current').then(r => r.json()),
+          fetch('/api/readings').then(r => r.json()),
+          fetch('/api/hourly').then(r => r.json()),
+          fetch('/api/peak').then(r => r.json()),
+          fetch('/api/summary').then(r => r.json()),
+        ]);
+        current.value = cur;
+        forecast.value = cur.forecast || {};
+        weather.value = cur.weather || null;
+        readings.value = rd.reverse();
+        hourly.value = hr;
+        peak.value = pk;
+        summary.value = sm;
+        loading.value = false;
+        updateCharts();
+      } catch (e) {
+        console.error('Fetch error:', e);
+      }
+    }
+
+    function updateCharts() {
+      const labels = readings.value.map(r => {
+        const d = new Date(r.timestamp);
+        return `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
+      });
+
+      const chartOpts = {
+        responsive: true,
+        maintainAspectRatio: true,
+        plugins: { legend: { labels: { color: '#94a3b8' } } },
+        scales: {
+          x: { ticks: { color: '#475569', maxTicksLimit: 12 }, grid: { color: '#1e293b' } },
+          y: { ticks: { color: '#475569' }, grid: { color: '#1e293b' } },
+        },
+      };
+
+      if (socChartInstance) socChartInstance.destroy();
+      if (socChart.value) {
+        socChartInstance = new Chart(socChart.value, {
+          type: 'line',
+          data: {
+            labels,
+            datasets: [{
+              label: 'SOC %',
+              data: readings.value.map(r => r.soc),
+              borderColor: '#22c55e',
+              backgroundColor: 'rgba(34,197,94,0.1)',
+              fill: true,
+              tension: 0.3,
+              pointRadius: 0,
+            }],
+          },
+          options: { ...chartOpts, scales: { ...chartOpts.scales, y: { ...chartOpts.scales.y, min: 0, max: 100 } } },
+        });
+      }
+
+      if (powerChartInstance) powerChartInstance.destroy();
+      if (powerChart.value) {
+        powerChartInstance = new Chart(powerChart.value, {
+          type: 'line',
+          data: {
+            labels,
+            datasets: [
+              { label: 'PV (W)', data: readings.value.map(r => r.pv_power), borderColor: '#f59e0b', tension: 0.3, pointRadius: 0 },
+              { label: 'Load (W)', data: readings.value.map(r => r.load_power), borderColor: '#3b82f6', tension: 0.3, pointRadius: 0 },
+              { label: 'Battery (W)', data: readings.value.map(r => r.battery_power), borderColor: '#a78bfa', tension: 0.3, pointRadius: 0 },
+            ],
+          },
+          options: chartOpts,
+        });
+      }
+    }
+
+    onMounted(() => {
+      fetchAll();
+      interval = setInterval(fetchAll, 60000);
+    });
+    onUnmounted(() => clearInterval(interval));
+
+    return { loading, current, forecast, weather, readings, hourly, peak, summary,
+             socClass, hoursLeftStr, maxHourly, socChart, powerChart };
+  },
+}).mount('#app');
+</script>
+</body>
+</html>

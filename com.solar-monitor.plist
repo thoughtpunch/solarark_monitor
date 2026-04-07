@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.solar-monitor</string>
+    <key>ProgramArguments</key>
+    <array>
+        <!-- Update these paths to match your installation -->
+        <string>/path/to/solar_monitor/venv/bin/python</string>
+        <string>-m</string>
+        <string>solar_monitor</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <!-- Update this path to match your installation -->
+    <string>/path/to/solar_monitor</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/path/to/solar_monitor/logs/monitor.log</string>
+    <key>StandardErrorPath</key>
+    <string>/path/to/solar_monitor/logs/monitor.err</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>
