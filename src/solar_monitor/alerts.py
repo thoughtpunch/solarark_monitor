@@ -1,23 +1,33 @@
-"""Alert handlers for macOS notifications and WhatsApp."""
+"""Alert handlers for macOS notifications and WhatsApp.
+
+Alert philosophy: catch problems EARLY with escalating severity.
+- Situational alerts fire based on time-of-day + conditions
+- Each alert type has its own cooldown so they don't block each other
+- Evening alerts give 6+ hours of lead time
+- Night alerts escalate as the situation worsens
+"""
 
 import subprocess
 import logging
 from datetime import datetime, timedelta
+
 from solar_monitor.forecast import BatteryForecast, OvernightForecast
 
 logger = logging.getLogger(__name__)
 
-# Separate cooldowns for realtime vs overnight alerts
-_last_realtime_alert: datetime | None = None
-_last_overnight_alert: datetime | None = None
-REALTIME_COOLDOWN = timedelta(hours=1)
-OVERNIGHT_COOLDOWN = timedelta(hours=2)  # Don't spam overnight alerts
+# Per-alert-type cooldowns to avoid spam but allow different alerts to fire
+_cooldowns: dict[str, datetime] = {}
 
 
-def _cooldown_ok(last_time: datetime | None, cooldown: timedelta) -> bool:
-    if last_time is None:
+def _cooldown_ok(alert_type: str, hours: float = 1.0) -> bool:
+    last = _cooldowns.get(alert_type)
+    if last is None:
         return True
-    return (datetime.now() - last_time) > cooldown
+    return (datetime.now() - last) > timedelta(hours=hours)
+
+
+def _mark_sent(alert_type: str):
+    _cooldowns[alert_type] = datetime.now()
 
 
 def send_macos_notification(title: str, message: str, sound: str = "Sosumi"):
@@ -29,7 +39,7 @@ def send_macos_notification(title: str, message: str, sound: str = "Sosumi"):
     )
     try:
         subprocess.run(["osascript", "-e", script], capture_output=True, timeout=10)
-        logger.info("macOS notification sent")
+        logger.info(f"macOS notification sent: {title}")
     except Exception as e:
         logger.error(f"Failed to send macOS notification: {e}")
 
@@ -54,14 +64,30 @@ def send_whatsapp_message(message: str, phone_number: str | None = None):
         logger.error(f"Failed to open WhatsApp: {e}")
 
 
+def _send(
+    alert_type: str,
+    title: str,
+    msg: str,
+    sound: str = "Sosumi",
+    whatsapp_phone: str | None = None,
+):
+    """Send notification + optional WhatsApp, with logging."""
+    logger.warning(f"ALERT [{alert_type}]: {title} — {msg}")
+    send_macos_notification(title, msg, sound=sound)
+    if whatsapp_phone:
+        send_whatsapp_message(f"{title}\n\n{msg}", whatsapp_phone)
+    _mark_sent(alert_type)
+
+
+# ── Realtime forecast alerts ──────────────────────────────────────
+
+
 def check_and_alert(forecast: BatteryForecast, whatsapp_phone: str | None = None):
     """Check realtime forecast and send alerts if at risk."""
-    global _last_realtime_alert
-
     if forecast.risk_level in ("ok", "watch"):
         return
 
-    if not _cooldown_ok(_last_realtime_alert, REALTIME_COOLDOWN):
+    if not _cooldown_ok("realtime", hours=1):
         return
 
     hours = forecast.hours_until_empty
@@ -71,49 +97,43 @@ def check_and_alert(forecast: BatteryForecast, whatsapp_phone: str | None = None
         f"SOC: {forecast.current_soc:.0f}% | "
         f"Drain: {forecast.drain_rate_w:.0f}W | "
         f"Empty in: {hrs_str} | "
-        f"SOC@10am: {forecast.estimated_soc_at_usable:.0f}%"
+        f"SOC@sunrise: {forecast.estimated_soc_at_usable:.0f}%"
     )
-    title = f"Battery {forecast.risk_level.upper()}"
     sound = "Basso" if forecast.risk_level == "critical" else "Sosumi"
+    emoji = "🚨" if forecast.risk_level == "critical" else "⚠️"
+    _send(
+        "realtime",
+        f"{emoji} Battery {forecast.risk_level.upper()}",
+        msg,
+        sound=sound,
+        whatsapp_phone=whatsapp_phone,
+    )
 
-    logger.warning(f"REALTIME ALERT [{forecast.risk_level.upper()}]: {msg}")
-    send_macos_notification(title, msg, sound=sound)
 
-    if whatsapp_phone:
-        send_whatsapp_message(f"{title}\n{msg}", whatsapp_phone)
-
-    _last_realtime_alert = datetime.now()
+# ── Overnight forecast alerts (from 4pm) ──────────────────────────
 
 
 def check_overnight_alert(
     overnight: OvernightForecast, whatsapp_phone: str | None = None
 ):
-    """Check overnight forecast and send advance warnings.
+    """Evening overnight forecast alerts.
 
-    This is the key alert — it fires in the evening (4pm+) to give you
-    6+ hours of lead time before a potential outage at 4-7am.
-
-    Alert thresholds tuned for Dan's experience:
-    - Under 70% at 6pm = could be bad in rainy season
-    - Under 50% at bedtime (10pm) with fans/projector = runs out ~6:30am
+    Fires from 4pm onward to give 6+ hours of lead time.
     """
-    global _last_overnight_alert
-
     if overnight.risk_level == "ok":
         return
 
-    if not _cooldown_ok(_last_overnight_alert, OVERNIGHT_COOLDOWN):
+    if not _cooldown_ok("overnight", hours=2):
         return
 
-    # Build alert message
     if overnight.risk_level == "critical":
-        title = "BATTERY WILL RUN OUT TONIGHT"
+        title = "🚨 BATTERY WILL RUN OUT TONIGHT"
         sound = "Basso"
     elif overnight.risk_level == "warning":
-        title = "Battery Warning — Tonight"
+        title = "⚠️ Battery Warning — Tonight"
         sound = "Basso"
-    else:  # watch
-        title = "Battery Watch — Tonight"
+    else:
+        title = "👀 Battery Watch — Tonight"
         sound = "Sosumi"
 
     msg = (
@@ -123,11 +143,114 @@ def check_overnight_alert(
         f"SOC@10am: {overnight.estimated_soc_at_10am:.0f}%\n"
         f"{overnight.action_needed}"
     )
+    _send("overnight", title, msg, sound=sound, whatsapp_phone=whatsapp_phone)
 
-    logger.warning(f"OVERNIGHT ALERT [{overnight.risk_level.upper()}]: {msg}")
-    send_macos_notification(title, msg, sound=sound)
 
-    if whatsapp_phone:
-        send_whatsapp_message(f"{title}\n\n{msg}", whatsapp_phone)
+# ── Situational alerts ─────────────────────────────────────────────
 
-    _last_overnight_alert = datetime.now()
+
+def check_situational_alerts(
+    soc: float,
+    load_power_w: float,
+    pv_power_w: float,
+    is_charging: bool,
+    whatsapp_phone: str | None = None,
+):
+    """Smart alerts based on time-of-day and conditions.
+
+    These catch problems that the forecast model might miss because
+    they're based on instantaneous readings, not projections.
+    """
+    now = datetime.now()
+    hour = now.hour
+
+    # ── Heavy drain after sunset (6pm-midnight) ──
+    # If draining > 10% per hour after sunset, that's 6-7 hours to empty
+    # from 100%. From 70% that's only 4-5 hours = dead by midnight.
+    if 18 <= hour <= 23 and not is_charging and load_power_w > 0:
+        # Estimate drain rate as % per hour (using 15kWh = 150Wh per %)
+        drain_pct_per_hour = load_power_w / 150  # Wh per % on 15kWh battery
+        if drain_pct_per_hour > 10 and _cooldown_ok("heavy_evening_drain", hours=1):
+            hours_to_empty = max(0, (soc - 20)) / drain_pct_per_hour
+            _send(
+                "heavy_evening_drain",
+                "🔥 Heavy Evening Drain",
+                (
+                    f"Draining ~{drain_pct_per_hour:.0f}%/hr at {load_power_w:.0f}W\n"
+                    f"SOC: {soc:.0f}% — empty by ~{(now + timedelta(hours=hours_to_empty)).strftime('%I:%M %p')}\n"
+                    f"Consider turning off non-essentials"
+                ),
+                sound="Sosumi",
+                whatsapp_phone=whatsapp_phone,
+            )
+
+    # ── Low SOC at 6pm (your 70% threshold) ──
+    if hour == 18 and soc < 70 and _cooldown_ok("low_soc_6pm", hours=12):
+        _send(
+            "low_soc_6pm",
+            "⚠️ Low Battery at Sunset",
+            (
+                f"SOC: {soc:.0f}% at 6pm — below 70% safety margin\n"
+                f"Load: {load_power_w:.0f}W | "
+                f"Historically this leads to outages in rainy season\n"
+                f"Reduce evening usage now"
+            ),
+            sound="Basso",
+            whatsapp_phone=whatsapp_phone,
+        )
+
+    # ── Low SOC at bedtime (your 50% threshold) ──
+    if hour == 22 and soc < 50 and _cooldown_ok("low_soc_10pm", hours=12):
+        hours_left = max(0, (soc - 20)) / max(1, load_power_w / 150)
+        _send(
+            "low_soc_10pm",
+            "🚨 Low Battery at Bedtime",
+            (
+                f"SOC: {soc:.0f}% at 10pm with {load_power_w:.0f}W load\n"
+                f"~{hours_left:.0f}h until cutoff\n"
+                f"Turn off fans/projector or you'll lose power overnight"
+            ),
+            sound="Basso",
+            whatsapp_phone=whatsapp_phone,
+        )
+
+    # ── Battery not charging when it should be (daytime, sunny, but SOC dropping) ──
+    if 9 <= hour <= 15 and pv_power_w > 500 and not is_charging and soc < 90:
+        if _cooldown_ok("not_charging_daytime", hours=2):
+            _send(
+                "not_charging_daytime",
+                "🔧 Battery Not Charging",
+                (
+                    f"PV: {pv_power_w:.0f}W but battery not charging (SOC: {soc:.0f}%)\n"
+                    f"Load: {load_power_w:.0f}W — load may be exceeding solar\n"
+                    f"Check high-draw appliances"
+                ),
+                sound="Sosumi",
+                whatsapp_phone=whatsapp_phone,
+            )
+
+    # ── Critically low SOC anytime (emergency) ──
+    if soc <= 25 and not is_charging and _cooldown_ok("critical_soc", hours=0.5):
+        _send(
+            "critical_soc",
+            "🚨 BATTERY CRITICAL",
+            (
+                f"SOC: {soc:.0f}% — approaching 20% safety cutoff\n"
+                f"Load: {load_power_w:.0f}W\n"
+                f"Shut down non-essential loads NOW"
+            ),
+            sound="Basso",
+            whatsapp_phone=whatsapp_phone,
+        )
+
+    # ── No solar production during daytime (system problem?) ──
+    if 8 <= hour <= 16 and pv_power_w == 0 and _cooldown_ok("no_solar", hours=4):
+        _send(
+            "no_solar",
+            "☁️ No Solar Production",
+            (
+                f"PV: 0W at {now.strftime('%I:%M %p')}\n"
+                f"Could be heavy clouds, or check inverter/panels"
+            ),
+            sound="Sosumi",
+        )

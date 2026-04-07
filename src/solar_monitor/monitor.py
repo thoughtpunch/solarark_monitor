@@ -11,7 +11,11 @@ from dataclasses import asdict
 from pysolark import SolArkClient
 
 from solar_monitor.forecast import forecast_battery, forecast_overnight
-from solar_monitor.alerts import check_and_alert, check_overnight_alert
+from solar_monitor.alerts import (
+    check_and_alert,
+    check_overnight_alert,
+    check_situational_alerts,
+)
 from solar_monitor.database import (
     init_db,
     store_reading,
@@ -248,10 +252,17 @@ def check_battery(client: SolArkClient) -> None:
             overnight,
         )
 
-        # Send alerts (checks both realtime and overnight forecasts)
+        # Send alerts — forecast-based, overnight, and situational
         check_and_alert(fc, whatsapp_phone=WHATSAPP_PHONE)
         if overnight:
             check_overnight_alert(overnight, whatsapp_phone=WHATSAPP_PHONE)
+        check_situational_alerts(
+            soc=soc,
+            load_power_w=load_power,
+            pv_power_w=pv_power,
+            is_charging=is_charging,
+            whatsapp_phone=WHATSAPP_PHONE,
+        )
 
     except Exception as e:
         logger.error(f"Error checking battery: {e}", exc_info=True)

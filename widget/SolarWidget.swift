@@ -6,9 +6,28 @@ import Cocoa
 
 class MenuTarget: NSObject {
     @objc func noop(_ sender: Any?) {}
+    @objc func openWeather(_ sender: Any?) {
+        NSWorkspace.shared.open(URL(string: "https://openweathermap.org")!)
+    }
+    @objc func openDashboard(_ sender: Any?) {
+        NSWorkspace.shared.open(URL(string: "http://localhost:8077")!)
+    }
 }
 
 let menuTarget = MenuTarget()
+
+func weatherEmoji(_ description: String, clouds: Double) -> String {
+    let d = description.lowercased()
+    if d.contains("thunder") { return "⛈️" }
+    if d.contains("heavy rain") || d.contains("downpour") { return "🌧️" }
+    if d.contains("rain") || d.contains("drizzle") { return "🌦️" }
+    if d.contains("snow") { return "🌨️" }
+    if d.contains("fog") || d.contains("mist") || d.contains("haze") { return "🌫️" }
+    if d.contains("clear") { return "☀️" }
+    if clouds > 80 { return "☁️" }
+    if clouds > 40 { return "⛅" }
+    return "🌤️"
+}
 
 func styledItem(_ text: String, bold: Bool = false, color: NSColor = .labelColor, size: CGFloat = 13) -> NSMenuItem {
     let item = NSMenuItem(title: text, action: #selector(MenuTarget.noop(_:)), keyEquivalent: "")
@@ -23,6 +42,20 @@ func styledItem(_ text: String, bold: Bool = false, color: NSColor = .labelColor
 
 func headerItem(_ text: String) -> NSMenuItem {
     return styledItem(text, bold: true, color: .secondaryLabelColor, size: 11)
+}
+
+func linkItem(_ text: String, action: Selector, size: CGFloat = 12) -> NSMenuItem {
+    let item = NSMenuItem(title: text, action: action, keyEquivalent: "")
+    item.target = menuTarget
+    item.attributedTitle = NSAttributedString(
+        string: text,
+        attributes: [
+            .font: NSFont.systemFont(ofSize: size),
+            .foregroundColor: NSColor.linkColor,
+            .underlineStyle: NSUnderlineStyle.single.rawValue
+        ]
+    )
+    return item
 }
 
 class SolarMenuBar: NSObject, NSApplicationDelegate {
@@ -80,16 +113,16 @@ class SolarMenuBar: NSObject, NSApplicationDelegate {
             let isCharging = json["is_charging"] as? Bool ?? false
 
             // Current status
-            menu.addItem(headerItem("CURRENT STATUS"))
+            menu.addItem(headerItem("⚡ CURRENT STATUS"))
 
             let socColor: NSColor = soc >= 50 ? .systemGreen : soc >= 30 ? .systemOrange : .systemRed
-            menu.addItem(styledItem("  Battery: \(Int(soc))%", bold: true, color: socColor, size: 14))
-            menu.addItem(styledItem("  Solar:   \(Int(pvPower))W", color: .systemYellow))
-            menu.addItem(styledItem("  Load:    \(Int(loadPower))W"))
+            menu.addItem(styledItem("  🔋 Battery: \(Int(soc))%", bold: true, color: socColor, size: 14))
+            menu.addItem(styledItem("  ☀️ Solar:   \(Int(pvPower))W", color: .systemYellow))
+            menu.addItem(styledItem("  🏠 Load:    \(Int(loadPower))W"))
 
-            let battLabel = isCharging ? "↑ Charging" : "↓ Draining"
+            let battLabel = isCharging ? "⬆ Charging" : "⬇ Draining"
             let battColor: NSColor = isCharging ? .systemGreen : .systemOrange
-            menu.addItem(styledItem("  Battery: \(Int(battPower))W \(battLabel)", color: battColor))
+            menu.addItem(styledItem("  🔌 Battery: \(Int(battPower))W \(battLabel)", color: battColor))
 
             menu.addItem(NSMenuItem.separator())
 
@@ -102,16 +135,21 @@ class SolarMenuBar: NSObject, NSApplicationDelegate {
                 let hoursSunrise = forecast["hours_until_sunrise"] as? Double ?? 0
                 let riskLevel = forecast["risk_level"] as? String ?? "ok"
 
-                menu.addItem(headerItem("FORECAST"))
+                menu.addItem(headerItem("🔮 FORECAST"))
 
+                let riskEmoji: String
                 let riskColor: NSColor
                 switch riskLevel {
-                case "critical": riskColor = .systemRed
-                case "warning": riskColor = .systemOrange
-                case "watch": riskColor = .systemYellow
-                default: riskColor = .systemGreen
+                case "critical":
+                    riskColor = .systemRed; riskEmoji = "🚨"
+                case "warning":
+                    riskColor = .systemOrange; riskEmoji = "⚠️"
+                case "watch":
+                    riskColor = .systemYellow; riskEmoji = "👀"
+                default:
+                    riskColor = .systemGreen; riskEmoji = "✅"
                 }
-                menu.addItem(styledItem("  Risk: \(riskLevel.uppercased())", bold: true, color: riskColor, size: 14))
+                menu.addItem(styledItem("  \(riskEmoji) Risk: \(riskLevel.uppercased())", bold: true, color: riskColor, size: 14))
 
                 let hoursStr: String
                 if hoursEmpty > 100 {
@@ -121,35 +159,45 @@ class SolarMenuBar: NSObject, NSApplicationDelegate {
                     let m = Int((hoursEmpty - Double(h)) * 60)
                     hoursStr = "\(h)h \(m)m"
                 }
-                menu.addItem(styledItem("  Hours left:     \(hoursStr)"))
-                menu.addItem(styledItem("  Drain rate:     \(Int(drainRate))W"))
-                menu.addItem(styledItem("  SOC at sunrise: \(Int(socAtSunrise))%"))
-                menu.addItem(styledItem("  Sunrise in:     \(String(format: "%.1f", hoursSunrise))h"))
+                menu.addItem(styledItem("  ⏳ Hours left:     \(hoursStr)"))
+                menu.addItem(styledItem("  📉 Drain rate:     \(Int(drainRate))W"))
+                menu.addItem(styledItem("  🌅 SOC at sunrise: \(Int(socAtSunrise))%"))
+                menu.addItem(styledItem("  🌄 Sunrise in:     \(String(format: "%.1f", hoursSunrise))h"))
 
                 if willDeplete {
                     menu.addItem(NSMenuItem.separator())
-                    menu.addItem(styledItem("  ⚠️  BATTERY WILL RUN OUT", bold: true, color: .systemRed, size: 14))
+                    menu.addItem(styledItem("  🚨 BATTERY WILL RUN OUT", bold: true, color: .systemRed, size: 14))
                 }
             }
 
             // Weather
             if let weather = json["weather"] as? [String: Any] {
                 menu.addItem(NSMenuItem.separator())
-                menu.addItem(headerItem("WEATHER"))
 
                 let temp = weather["temp"] as? Double ?? 0
                 let clouds = weather["clouds"] as? Double ?? 0
+                let humidity = weather["humidity"] as? Double ?? 0
                 let desc = weather["description"] as? String ?? ""
-                menu.addItem(styledItem("  \(desc.capitalized), \(Int(temp))°C"))
-                menu.addItem(styledItem("  Clouds: \(Int(clouds))%", color: clouds > 70 ? .systemOrange : .labelColor))
+                let emoji = weatherEmoji(desc, clouds: clouds)
+
+                menu.addItem(headerItem("\(emoji) WEATHER"))
+                menu.addItem(styledItem("  \(emoji) \(desc.capitalized)"))
+                menu.addItem(styledItem("  🌡️ Temp: \(Int(temp))°C"))
+                menu.addItem(styledItem("  ☁️ Clouds: \(Int(clouds))%", color: clouds > 70 ? .systemOrange : .labelColor))
+                menu.addItem(styledItem("  💧 Humidity: \(Int(humidity))%"))
+
+                // OpenWeatherMap link
+                menu.addItem(linkItem("  🔗 OpenWeatherMap.org", action: #selector(MenuTarget.openWeather(_:))))
             }
 
-            // Updated
+            // Updated + links
+            menu.addItem(NSMenuItem.separator())
             if let updated = json["updated"] as? String {
-                menu.addItem(NSMenuItem.separator())
                 let short = String(updated.prefix(19)).replacingOccurrences(of: "T", with: " ")
-                menu.addItem(styledItem(short, color: .tertiaryLabelColor, size: 11))
+                menu.addItem(styledItem("🕐 \(short)", color: .tertiaryLabelColor, size: 11))
             }
+            menu.addItem(linkItem("📊 Open Dashboard", action: #selector(MenuTarget.openDashboard(_:))))
+
         } else {
             menu.addItem(styledItem("No data available"))
             menu.addItem(styledItem("Run: python -m solar_monitor", color: .secondaryLabelColor, size: 11))
