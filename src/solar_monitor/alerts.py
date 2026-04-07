@@ -7,8 +7,12 @@ Alert philosophy: catch problems EARLY with escalating severity.
 - Night alerts escalate as the situation worsens
 """
 
+import os
 import subprocess
 import logging
+import urllib.request
+import urllib.parse
+import json
 from datetime import datetime, timedelta
 
 from solar_monitor.forecast import BatteryForecast, OvernightForecast
@@ -46,9 +50,6 @@ def send_macos_notification(title: str, message: str, sound: str = "Sosumi"):
 
 def send_whatsapp_message(message: str, phone_number: str | None = None):
     """Open WhatsApp with a pre-filled message."""
-    import os
-    import urllib.parse
-
     phone = phone_number or os.getenv("WHATSAPP_PHONE")
     if not phone:
         return
@@ -64,6 +65,64 @@ def send_whatsapp_message(message: str, phone_number: str | None = None):
         logger.error(f"Failed to open WhatsApp: {e}")
 
 
+def send_ntfy(title: str, message: str, priority: str = "default"):
+    """Send push notification via ntfy.sh (free, shows on iOS/Android).
+
+    Set NTFY_TOPIC in .env to a secret topic name (e.g. 'dan-solar-abc123').
+    Install the ntfy app on iOS: https://apps.apple.com/app/ntfy/id1625396347
+    Subscribe to your topic in the app.
+    """
+    topic = os.getenv("NTFY_TOPIC")
+    if not topic:
+        return
+
+    ntfy_url = os.getenv("NTFY_URL", "https://ntfy.sh")
+    try:
+        data = json.dumps(
+            {
+                "topic": topic,
+                "title": title,
+                "message": message,
+                "priority": priority,
+                "tags": ["battery", "solar"],
+            }
+        ).encode()
+        req = urllib.request.Request(
+            ntfy_url,
+            data=data,
+            headers={"Content-Type": "application/json"},
+        )
+        urllib.request.urlopen(req, timeout=10)
+        logger.info(f"ntfy push sent: {title}")
+    except Exception as e:
+        logger.error(f"Failed to send ntfy push: {e}")
+
+
+def send_imessage(message: str, recipient: str | None = None):
+    """Send iMessage via AppleScript — shows on all Apple devices.
+
+    Set IMESSAGE_TO in .env (phone number or Apple ID email).
+    Piggybacks on macOS Messages.app privilege.
+    """
+    to = recipient or os.getenv("IMESSAGE_TO")
+    if not to:
+        return
+
+    escaped = message.replace("\\", "\\\\").replace('"', '\\"')
+    script = f'''
+    tell application "Messages"
+        set targetService to 1st account whose service type = iMessage
+        set targetBuddy to participant "{to}" of targetService
+        send "{escaped}" to targetBuddy
+    end tell
+    '''
+    try:
+        subprocess.run(["osascript", "-e", script], capture_output=True, timeout=15)
+        logger.info(f"iMessage sent to {to}")
+    except Exception as e:
+        logger.error(f"Failed to send iMessage: {e}")
+
+
 def _send(
     alert_type: str,
     title: str,
@@ -71,11 +130,23 @@ def _send(
     sound: str = "Sosumi",
     whatsapp_phone: str | None = None,
 ):
-    """Send notification + optional WhatsApp, with logging."""
+    """Send to ALL configured notification channels."""
     logger.warning(f"ALERT [{alert_type}]: {title} — {msg}")
+
+    # macOS notification (always)
     send_macos_notification(title, msg, sound=sound)
+
+    # iOS push via ntfy.sh
+    priority = "urgent" if "critical" in alert_type.lower() or "🚨" in title else "high"
+    send_ntfy(title, msg, priority=priority)
+
+    # iMessage (shows on iPhone/iPad/Watch)
+    send_imessage(f"{title}\n{msg}")
+
+    # WhatsApp
     if whatsapp_phone:
         send_whatsapp_message(f"{title}\n\n{msg}", whatsapp_phone)
+
     _mark_sent(alert_type)
 
 
