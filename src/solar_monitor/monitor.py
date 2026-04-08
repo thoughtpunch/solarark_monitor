@@ -84,13 +84,37 @@ def write_widget_data(
     overnight=None,
 ):
     """Write current state to JSON for the macOS widget and web dashboard."""
+    from solar_monitor.forecast import get_sunrise_sunset
+    from datetime import timedelta
+
+    now = datetime.now()
+    sunrise_today, sunset_today = get_sunrise_sunset(now)
+    sunrise_tomorrow, _ = get_sunrise_sunset(now + timedelta(days=1))
+
+    # Show the NEXT sun event — sunset if daytime, sunrise if nighttime
+    if now < sunset_today:
+        next_sun_event = "sunset"
+        next_sun_time = sunset_today
+    else:
+        next_sun_event = "sunrise"
+        next_sun_time = sunrise_tomorrow
+
+    hours_until_sun = max(0, (next_sun_time - now).total_seconds() / 3600)
+
     data = {
-        "updated": datetime.now().isoformat(),
+        "updated": now.isoformat(),
         "soc": soc,
         "pv_power": pv_power,
         "load_power": load_power,
         "battery_power": battery_power,
         "is_charging": is_charging,
+        "sun": {
+            "event": next_sun_event,
+            "hours": round(hours_until_sun, 1),
+            "time": next_sun_time.strftime("%H:%M"),
+            "sunrise": sunrise_today.strftime("%H:%M"),
+            "sunset": sunset_today.strftime("%H:%M"),
+        },
         "forecast": {
             "soc_at_sunrise": forecast.estimated_soc_at_sunrise,
             "soc_at_usable": forecast.estimated_soc_at_usable,

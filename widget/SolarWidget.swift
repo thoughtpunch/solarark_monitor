@@ -132,7 +132,7 @@ class SolarMenuBar: NSObject, NSApplicationDelegate {
                 let hoursEmpty = forecast["hours_until_empty"] as? Double ?? 0
                 let willDeplete = forecast["will_deplete"] as? Bool ?? false
                 let drainRate = forecast["drain_rate_w"] as? Double ?? 0
-                let hoursSunrise = forecast["hours_until_sunrise"] as? Double ?? 0
+                let _ = forecast["hours_until_sunrise"] as? Double ?? 0
                 let riskLevel = forecast["risk_level"] as? String ?? "ok"
 
                 menu.addItem(headerItem("🔮 FORECAST"))
@@ -162,7 +162,20 @@ class SolarMenuBar: NSObject, NSApplicationDelegate {
                 menu.addItem(styledItem("  ⏳ Hours left:     \(hoursStr)"))
                 menu.addItem(styledItem("  📉 Drain rate:     \(Int(drainRate))W"))
                 menu.addItem(styledItem("  🌅 SOC at sunrise: \(Int(socAtSunrise))%"))
-                menu.addItem(styledItem("  🌄 Sunrise in:     \(String(format: "%.1f", hoursSunrise))h"))
+
+                // Show next sun event — sunset during day, sunrise at night
+                if let sun = json["sun"] as? [String: Any] {
+                    let event = sun["event"] as? String ?? "sunrise"
+                    let sunHours = sun["hours"] as? Double ?? 0
+                    let sunTime = sun["time"] as? String ?? ""
+                    let sunriseTime = sun["sunrise"] as? String ?? ""
+                    let sunsetTime = sun["sunset"] as? String ?? ""
+
+                    let emoji = event == "sunset" ? "🌇" : "🌅"
+                    let label = event == "sunset" ? "Sunset" : "Sunrise"
+                    menu.addItem(styledItem("  \(emoji) \(label) in:   \(String(format: "%.1f", sunHours))h (\(sunTime))"))
+                    menu.addItem(styledItem("  ☀️ Sun: \(sunriseTime) — \(sunsetTime)", color: .secondaryLabelColor, size: 11))
+                }
 
                 if willDeplete {
                     menu.addItem(NSMenuItem.separator())
