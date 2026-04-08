@@ -10,7 +10,7 @@ from datetime import datetime
 from dataclasses import asdict
 from pysolark import SolArkClient
 
-from solar_monitor.forecast import forecast_battery, forecast_overnight
+from solar_monitor.forecast import forecast_battery, forecast_overnight, set_sun_times
 from solar_monitor.alerts import (
     check_and_alert,
     check_overnight_alert,
@@ -60,6 +60,9 @@ def fetch_weather() -> dict | None:
     weather = get_current_weather()
     if weather:
         store_weather(**weather)
+        # Feed real sunrise/sunset into forecast engine
+        if weather.get("sunrise") and weather.get("sunset"):
+            set_sun_times(weather["sunrise"], weather["sunset"])
         _last_weather = weather
         _last_weather_check = now
         logger.info(

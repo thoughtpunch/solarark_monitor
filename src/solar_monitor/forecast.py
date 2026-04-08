@@ -1,7 +1,6 @@
 """Battery depletion forecasting based on current trends and weather predictions."""
 
 import os
-import math
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 
@@ -52,36 +51,48 @@ CLOUDY_USABLE_SOLAR_HOUR = 10.0  # 10am on rainy/overcast days
 CLEAR_USABLE_SOLAR_HOUR = 8.0  # 8am on clear days
 
 
-def estimate_sunrise_sunset(lat: float, date: datetime) -> tuple[datetime, datetime]:
-    """Sunrise/sunset estimate. Near equator: sunrise ~5:30-6:00, sunset ~17:30-18:00."""
-    day_of_year = date.timetuple().tm_yday
-    declination = -23.45 * math.cos(math.radians(360 / 365 * (day_of_year + 10)))
-    hour_angle = math.degrees(
-        math.acos(-math.tan(math.radians(lat)) * math.tan(math.radians(declination)))
-    )
+# Cache for real sunrise/sunset from weather API
+_sun_cache: dict[str, datetime] = {}
 
-    sunrise_hour = 12 - hour_angle / 15
-    sunset_hour = 12 + hour_angle / 15
 
-    tz_offset = TZ_OFFSET
-    lng_correction = (LONGITUDE - (tz_offset * 15)) / 15
+def get_sunrise_sunset(date: datetime) -> tuple[datetime, datetime]:
+    """Get sunrise/sunset, preferring real data from OpenWeatherMap.
 
-    sunrise_hour = (sunrise_hour - lng_correction + tz_offset + 12) % 24
-    sunset_hour = (sunset_hour - lng_correction + tz_offset + 12) % 24
+    Falls back to sensible defaults for near-equator locations if API unavailable.
+    """
+    date_key = date.strftime("%Y-%m-%d")
 
-    sunrise = date.replace(
-        hour=int(sunrise_hour),
-        minute=int((sunrise_hour % 1) * 60),
-        second=0,
-        microsecond=0,
-    )
-    sunset = date.replace(
-        hour=int(sunset_hour),
-        minute=int((sunset_hour % 1) * 60),
-        second=0,
-        microsecond=0,
-    )
+    # Return cached if available for this date
+    if f"{date_key}_sunrise" in _sun_cache:
+        return _sun_cache[f"{date_key}_sunrise"], _sun_cache[f"{date_key}_sunset"]
+
+    # Try to get from weather API
+    try:
+        from solar_monitor.weather import get_current_weather
+
+        weather = get_current_weather()
+        if weather and weather.get("sunrise") and weather.get("sunset"):
+            sunrise = datetime.fromisoformat(weather["sunrise"])
+            sunset = datetime.fromisoformat(weather["sunset"])
+            _sun_cache[f"{date_key}_sunrise"] = sunrise
+            _sun_cache[f"{date_key}_sunset"] = sunset
+            return sunrise, sunset
+    except Exception:
+        pass
+
+    # Fallback: reasonable defaults for near-equator (Costa Rica ~5:30/17:45)
+    sunrise = date.replace(hour=5, minute=30, second=0, microsecond=0)
+    sunset = date.replace(hour=17, minute=45, second=0, microsecond=0)
     return sunrise, sunset
+
+
+def set_sun_times(sunrise_iso: str, sunset_iso: str):
+    """Set sunrise/sunset from external source (e.g. weather fetch in monitor)."""
+    sunrise = datetime.fromisoformat(sunrise_iso)
+    sunset = datetime.fromisoformat(sunset_iso)
+    date_key = sunrise.strftime("%Y-%m-%d")
+    _sun_cache[f"{date_key}_sunrise"] = sunrise
+    _sun_cache[f"{date_key}_sunset"] = sunset
 
 
 def estimate_usable_solar_hour(cloud_cover: float = 50.0) -> float:
@@ -107,8 +118,8 @@ def forecast_battery(
         now = datetime.now()
 
     tomorrow = now + timedelta(days=1)
-    sunrise_today, sunset_today = estimate_sunrise_sunset(LATITUDE, now)
-    sunrise_tomorrow, _ = estimate_sunrise_sunset(LATITUDE, tomorrow)
+    sunrise_today, sunset_today = get_sunrise_sunset(now)
+    sunrise_tomorrow, _ = get_sunrise_sunset(tomorrow)
 
     next_sunrise = sunrise_today if now < sunrise_today else sunrise_tomorrow
     hours_until_sunrise = max(0, (next_sunrise - now).total_seconds() / 3600)
@@ -195,8 +206,8 @@ def forecast_overnight(
         now = datetime.now()
 
     tomorrow = now + timedelta(days=1)
-    _, sunset_today = estimate_sunrise_sunset(LATITUDE, now)
-    sunrise_tomorrow, _ = estimate_sunrise_sunset(LATITUDE, tomorrow)
+    _, sunset_today = get_sunrise_sunset(now)
+    sunrise_tomorrow, _ = get_sunrise_sunset(tomorrow)
 
     # When will solar actually produce enough to matter?
     usable_hour = estimate_usable_solar_hour(tomorrow_cloud_pct)
