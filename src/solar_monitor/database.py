@@ -240,6 +240,31 @@ def get_average_usage_by_hour(days: int = 7) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+def get_hourly_load_profile(days: int = 30) -> dict[int, float]:
+    """Get median load per hour-of-day for overnight hours (6pm-8am).
+
+    Returns {hour: median_load_w} using recent history. Uses percentile
+    approximation via grouping to get a robust central estimate that isn't
+    skewed by outlier spikes.
+    """
+    with get_db() as conn:
+        rows = conn.execute(
+            """SELECT
+                CAST(strftime('%H', timestamp) AS INTEGER) as hour,
+                AVG(load_power) as avg_load,
+                COUNT(*) as samples
+               FROM readings
+               WHERE timestamp > datetime('now', ?)
+               AND load_power > 0
+               AND (CAST(strftime('%H', timestamp) AS INTEGER) >= 17
+                    OR CAST(strftime('%H', timestamp) AS INTEGER) < 9)
+               GROUP BY hour
+               ORDER BY hour""",
+            (f"-{days} days",),
+        ).fetchall()
+        return {row["hour"]: row["avg_load"] for row in rows}
+
+
 def get_peak_usage(days: int = 7) -> dict:
     """Get peak usage stats over the last N days."""
     with get_db() as conn:

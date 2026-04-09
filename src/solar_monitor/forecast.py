@@ -1,8 +1,11 @@
 """Battery depletion forecasting based on current trends and weather predictions."""
 
 import os
+import logging
 from datetime import datetime, timedelta
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -74,6 +77,12 @@ def get_sunrise_sunset(date: datetime) -> tuple[datetime, datetime]:
         if weather and weather.get("sunrise") and weather.get("sunset"):
             sunrise = datetime.fromisoformat(weather["sunrise"])
             sunset = datetime.fromisoformat(weather["sunset"])
+            # API returns today's times — shift to requested date if different
+            target_date = date.date() if isinstance(date, datetime) else date
+            if sunrise.date() != target_date:
+                sunrise = sunrise.replace(year=target_date.year, month=target_date.month, day=target_date.day)
+            if sunset.date() != target_date:
+                sunset = sunset.replace(year=target_date.year, month=target_date.month, day=target_date.day)
             _sun_cache[f"{date_key}_sunrise"] = sunrise
             _sun_cache[f"{date_key}_sunset"] = sunset
             return sunrise, sunset
@@ -103,6 +112,101 @@ def estimate_usable_solar_hour(cloud_cover: float = 50.0) -> float:
     )
 
 
+def _load_hourly_profile() -> dict[int, float]:
+    """Load the historical hourly load profile from the database.
+
+    Returns {hour: avg_watts} for overnight hours. Falls back to sensible
+    defaults if no data is available.
+    """
+    try:
+        from solar_monitor.database import get_hourly_load_profile
+        profile = get_hourly_load_profile(days=30)
+        if profile and len(profile) >= 8:
+            return profile
+    except Exception:
+        pass
+
+    # Fallback: typical Costa Rica off-grid overnight curve
+    return {
+        17: 700, 18: 740, 19: 687, 20: 622, 21: 550, 22: 475,
+        23: 428, 0: 397, 1: 373, 2: 359, 3: 349, 4: 342,
+        5: 333, 6: 355, 7: 411, 8: 500,
+    }
+
+
+def integrate_hourly_drain(
+    start: datetime,
+    end: datetime,
+    hourly_profile: dict[int, float],
+    current_load_w: float,
+    battery_capacity_wh: float = BATTERY_CAPACITY_WH,
+) -> tuple[float, datetime | None]:
+    """Walk forward hour-by-hour, integrating energy drain using historical load profile.
+
+    Returns (total_soc_drop_pct, time_when_empty_or_None).
+    For the current partial hour, uses the actual current load reading.
+    For future hours, uses the historical profile.
+    """
+    total_wh = 0.0
+    cursor = start
+
+    while cursor < end:
+        # How much of this hour remains?
+        next_hour = (cursor + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+        segment_end = min(next_hour, end)
+        segment_hours = (segment_end - cursor).total_seconds() / 3600
+
+        hour = cursor.hour
+        # For the first segment, blend current load with historical
+        if cursor == start:
+            load_w = current_load_w
+        else:
+            load_w = hourly_profile.get(hour, current_load_w)
+
+        segment_wh = load_w * segment_hours
+        total_wh += segment_wh
+
+        cursor = segment_end
+
+    total_soc_drop = (total_wh / battery_capacity_wh) * 100
+    return total_soc_drop, total_wh
+
+
+def find_empty_time(
+    start: datetime,
+    end: datetime,
+    starting_soc: float,
+    hourly_profile: dict[int, float],
+    current_load_w: float,
+    battery_capacity_wh: float = BATTERY_CAPACITY_WH,
+) -> datetime | None:
+    """Walk forward to find when SOC hits the safety cutoff. Returns None if it won't."""
+    usable_soc = max(0, starting_soc - BATTERY_SAFETY_CUTOFF)
+    usable_wh = (usable_soc / 100.0) * battery_capacity_wh
+    consumed_wh = 0.0
+    cursor = start
+
+    while cursor < end:
+        next_hour = (cursor + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+        segment_end = min(next_hour, end)
+        segment_hours = (segment_end - cursor).total_seconds() / 3600
+
+        hour = cursor.hour
+        load_w = current_load_w if cursor == start else hourly_profile.get(hour, current_load_w)
+
+        segment_wh = load_w * segment_hours
+        if consumed_wh + segment_wh >= usable_wh:
+            # Empty happens partway through this segment
+            remaining_wh = usable_wh - consumed_wh
+            hours_into_segment = remaining_wh / load_w if load_w > 0 else 0
+            return cursor + timedelta(hours=hours_into_segment)
+
+        consumed_wh += segment_wh
+        cursor = segment_end
+
+    return None  # Won't deplete before end
+
+
 def forecast_battery(
     soc: float,
     load_power_w: float,
@@ -113,7 +217,11 @@ def forecast_battery(
     battery_capacity_wh: float = BATTERY_CAPACITY_WH,
     cloud_cover: float = 50.0,
 ) -> BatteryForecast:
-    """Real-time forecast: will battery last until solar becomes usable?"""
+    """Real-time forecast: will battery last until solar becomes usable?
+
+    Uses historical hourly load profiles for overnight drain prediction
+    instead of flat-rate projection.
+    """
     if now is None:
         now = datetime.now()
 
@@ -134,11 +242,14 @@ def forecast_battery(
     else:
         hours_until_usable = max(0, (next_usable - now).total_seconds() / 3600)
 
-    # Net drain rate
     is_after_sunset = now > sunset_today
     is_before_sunrise = now < sunrise_today
     is_nighttime = is_after_sunset or is_before_sunrise
 
+    # Load hourly profile for integration
+    hourly_profile = _load_hourly_profile()
+
+    # Current net drain (for display)
     if is_nighttime:
         net_drain_w = load_power_w
     elif pv_power_w < load_power_w and not is_charging:
@@ -146,29 +257,62 @@ def forecast_battery(
     elif is_charging:
         net_drain_w = 0
     else:
-        net_drain_w = load_power_w  # Use load as overnight estimate
+        net_drain_w = load_power_w
 
-    usable_soc = max(0, soc - BATTERY_SAFETY_CUTOFF)
-    usable_wh = (usable_soc / 100.0) * battery_capacity_wh
+    # Daytime with solar: battery is recovering
+    if not is_nighttime and (is_charging or pv_power_w > 0):
+        # Integrate overnight drain using hourly profile (sunset to usable solar)
+        soc_drop_overnight, _ = integrate_hourly_drain(
+            sunset_today, next_usable, hourly_profile, load_power_w, battery_capacity_wh
+        )
 
-    hours_until_empty = usable_wh / net_drain_w if net_drain_w > 0 else float("inf")
+        # Estimate SOC at sunset: current SOC + charging gains
+        if is_charging and battery_power_w > 0:
+            hours_to_sunset = max(0, (sunset_today - now).total_seconds() / 3600)
+            soc_gain = (battery_power_w * hours_to_sunset / battery_capacity_wh) * 100
+            estimated_soc_at_sunset = min(100, soc + soc_gain)
+        else:
+            estimated_soc_at_sunset = soc
 
-    soc_drop_sunrise = (net_drain_w * hours_until_sunrise / battery_capacity_wh) * 100
-    estimated_soc_at_sunrise = soc - soc_drop_sunrise
-
-    soc_drop_usable = (net_drain_w * hours_until_usable / battery_capacity_wh) * 100
-    estimated_soc_at_usable = soc - soc_drop_usable
-
-    will_deplete = estimated_soc_at_usable < BATTERY_SAFETY_CUTOFF
-
-    if estimated_soc_at_usable >= 50:
+        estimated_soc_at_sunrise = max(0, estimated_soc_at_sunset - soc_drop_overnight)
+        estimated_soc_at_usable = estimated_soc_at_sunrise
+        will_deplete = False
         risk_level = "ok"
-    elif estimated_soc_at_usable >= 30:
-        risk_level = "watch"
-    elif estimated_soc_at_usable >= BATTERY_SAFETY_CUTOFF:
-        risk_level = "warning"
+        hours_until_empty = float("inf")
     else:
-        risk_level = "critical"
+        # Nighttime: integrate from now using hourly profile
+        soc_drop_sunrise, _ = integrate_hourly_drain(
+            now, next_sunrise, hourly_profile, load_power_w, battery_capacity_wh
+        )
+        estimated_soc_at_sunrise = soc - soc_drop_sunrise
+
+        soc_drop_usable, _ = integrate_hourly_drain(
+            now, next_usable, hourly_profile, load_power_w, battery_capacity_wh
+        )
+        estimated_soc_at_usable = soc - soc_drop_usable
+
+        # Find when battery will actually hit cutoff
+        empty_time = find_empty_time(
+            now, next_usable, soc, hourly_profile, load_power_w, battery_capacity_wh
+        )
+
+        if empty_time:
+            hours_until_empty = (empty_time - now).total_seconds() / 3600
+        else:
+            usable_soc = max(0, soc - BATTERY_SAFETY_CUTOFF)
+            usable_wh = (usable_soc / 100.0) * battery_capacity_wh
+            hours_until_empty = usable_wh / net_drain_w if net_drain_w > 0 else float("inf")
+
+        will_deplete = estimated_soc_at_usable < BATTERY_SAFETY_CUTOFF
+
+        if estimated_soc_at_usable >= 50:
+            risk_level = "ok"
+        elif estimated_soc_at_usable >= 30:
+            risk_level = "watch"
+        elif estimated_soc_at_usable >= BATTERY_SAFETY_CUTOFF:
+            risk_level = "warning"
+        else:
+            risk_level = "critical"
 
     return BatteryForecast(
         current_soc=soc,
@@ -219,36 +363,29 @@ def forecast_overnight(
     )
 
     # Hours on battery = sunset to usable solar
-    if now > sunset_today:
-        # Already past sunset, count from now
-        hours_on_battery = (usable_solar_time - now).total_seconds() / 3600
-    else:
-        # Still daylight, count from sunset
-        hours_on_battery = (usable_solar_time - sunset_today).total_seconds() / 3600
+    drain_start = now if now > sunset_today else sunset_today
+    hours_on_battery = max(0, (usable_solar_time - drain_start).total_seconds() / 3600)
 
-    hours_on_battery = max(0, hours_on_battery)
+    # Hourly profile integration instead of flat rate
+    hourly_profile = _load_hourly_profile()
+    soc_drop_pct, energy_needed_wh = integrate_hourly_drain(
+        drain_start, usable_solar_time, hourly_profile,
+        avg_overnight_load_w, battery_capacity_wh
+    )
 
-    # Energy math
-    energy_needed_wh = avg_overnight_load_w * hours_on_battery
     energy_available_wh = (
         max(0, (current_soc - BATTERY_SAFETY_CUTOFF) / 100.0) * battery_capacity_wh
     )
     surplus_deficit_wh = energy_available_wh - energy_needed_wh
 
-    # Projected SOC at 10am (worst case)
-    soc_drop = (energy_needed_wh / battery_capacity_wh) * 100
-    estimated_soc_at_10am = current_soc - soc_drop
+    estimated_soc_at_10am = current_soc - soc_drop_pct
 
     # When will battery hit cutoff?
-    if avg_overnight_load_w > 0 and energy_available_wh < energy_needed_wh:
-        hours_to_empty = energy_available_wh / avg_overnight_load_w
-        if now > sunset_today:
-            empty_time = now + timedelta(hours=hours_to_empty)
-        else:
-            empty_time = sunset_today + timedelta(hours=hours_to_empty)
-        estimated_empty_time = empty_time.strftime("%H:%M")
-    else:
-        estimated_empty_time = "N/A"
+    empty_time_dt = find_empty_time(
+        drain_start, usable_solar_time, current_soc,
+        hourly_profile, avg_overnight_load_w, battery_capacity_wh
+    )
+    estimated_empty_time = empty_time_dt.strftime("%H:%M") if empty_time_dt else "N/A"
 
     will_survive = estimated_soc_at_10am >= BATTERY_SAFETY_CUTOFF
 

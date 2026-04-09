@@ -10,7 +10,7 @@ from datetime import datetime
 from dataclasses import asdict
 from pysolark import SolArkClient
 
-from solar_monitor.forecast import forecast_battery, forecast_overnight, set_sun_times
+from solar_monitor.forecast import forecast_battery, forecast_overnight, set_sun_times, BATTERY_CAPACITY_WH
 from solar_monitor.alerts import (
     check_and_alert,
     check_overnight_alert,
@@ -91,6 +91,8 @@ def write_widget_data(
     sunrise_today, sunset_today = get_sunrise_sunset(now)
     sunrise_tomorrow, _ = get_sunrise_sunset(now + timedelta(days=1))
 
+    is_nighttime = now >= sunset_today or now < sunrise_today
+
     # Show the NEXT sun event — sunset if daytime, sunrise if nighttime
     if now < sunset_today:
         next_sun_event = "sunset"
@@ -101,6 +103,13 @@ def write_widget_data(
 
     hours_until_sun = max(0, (next_sun_time - now).total_seconds() / 3600)
 
+    # Wall-clock time when battery will hit cutoff
+    hours_until_empty = min(forecast.hours_until_empty, 999)
+    if hours_until_empty < 999:
+        empty_at = (now + timedelta(hours=hours_until_empty)).strftime("%H:%M")
+    else:
+        empty_at = None
+
     data = {
         "updated": now.isoformat(),
         "soc": soc,
@@ -108,6 +117,7 @@ def write_widget_data(
         "load_power": load_power,
         "battery_power": battery_power,
         "is_charging": is_charging,
+        "is_nighttime": is_nighttime,
         "sun": {
             "event": next_sun_event,
             "hours": round(hours_until_sun, 1),
@@ -120,10 +130,14 @@ def write_widget_data(
             "soc_at_usable": forecast.estimated_soc_at_usable,
             "hours_until_sunrise": forecast.hours_until_sunrise,
             "hours_until_usable_solar": forecast.hours_until_usable_solar,
-            "hours_until_empty": min(forecast.hours_until_empty, 999),
+            "hours_until_empty": hours_until_empty,
             "will_deplete": forecast.will_deplete,
             "drain_rate_w": forecast.drain_rate_w,
+            "drain_pct_per_hour": round(
+                (forecast.drain_rate_w / BATTERY_CAPACITY_WH) * 100, 1
+            ) if forecast.drain_rate_w > 0 else 0,
             "risk_level": forecast.risk_level,
+            "empty_at": empty_at,
         },
         "weather": weather,
     }

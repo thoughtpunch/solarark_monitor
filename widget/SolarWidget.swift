@@ -132,10 +132,12 @@ class SolarMenuBar: NSObject, NSApplicationDelegate {
                 let hoursEmpty = forecast["hours_until_empty"] as? Double ?? 0
                 let willDeplete = forecast["will_deplete"] as? Bool ?? false
                 let drainRate = forecast["drain_rate_w"] as? Double ?? 0
-                let _ = forecast["hours_until_sunrise"] as? Double ?? 0
+                let drainPctHr = forecast["drain_pct_per_hour"] as? Double ?? 0
                 let riskLevel = forecast["risk_level"] as? String ?? "ok"
+                let emptyAt = forecast["empty_at"] as? String
+                let isNight = json["is_nighttime"] as? Bool ?? false
 
-                menu.addItem(headerItem("🔮 FORECAST"))
+                menu.addItem(headerItem(isNight ? "🌙 OVERNIGHT FORECAST" : "🔮 FORECAST"))
 
                 let riskEmoji: String
                 let riskColor: NSColor
@@ -151,17 +153,40 @@ class SolarMenuBar: NSObject, NSApplicationDelegate {
                 }
                 menu.addItem(styledItem("  \(riskEmoji) Risk: \(riskLevel.uppercased())", bold: true, color: riskColor, size: 14))
 
-                let hoursStr: String
-                if hoursEmpty > 100 {
-                    hoursStr = "99+ hours"
+                // Drain info
+                menu.addItem(styledItem("  📉 Draining:   \(Int(drainRate))W (\(String(format: "%.1f", drainPctHr))%/hr)"))
+
+                if isNight {
+                    // Nighttime: show projected SOC at sunrise and empty-at time
+                    let socColor: NSColor = socAtSunrise >= 50 ? .systemGreen : socAtSunrise >= 30 ? .systemYellow : socAtSunrise >= 20 ? .systemOrange : .systemRed
+                    menu.addItem(styledItem("  🌅 SOC at sunrise: \(Int(socAtSunrise))%", color: socColor))
+
+                    if willDeplete, let emptyTime = emptyAt {
+                        menu.addItem(styledItem("  🚨 Empty at:   \(emptyTime)", bold: true, color: .systemRed))
+                    } else {
+                        let hoursStr: String
+                        if hoursEmpty > 100 {
+                            hoursStr = "99+ hours"
+                        } else {
+                            let h = Int(hoursEmpty)
+                            let m = Int((hoursEmpty - Double(h)) * 60)
+                            hoursStr = "\(h)h \(m)m"
+                        }
+                        menu.addItem(styledItem("  ⏳ Hours left:  \(hoursStr)"))
+                    }
                 } else {
-                    let h = Int(hoursEmpty)
-                    let m = Int((hoursEmpty - Double(h)) * 60)
-                    hoursStr = "\(h)h \(m)m"
+                    // Daytime: show hours left and SOC at sunrise
+                    let hoursStr: String
+                    if hoursEmpty > 100 {
+                        hoursStr = "99+ hours"
+                    } else {
+                        let h = Int(hoursEmpty)
+                        let m = Int((hoursEmpty - Double(h)) * 60)
+                        hoursStr = "\(h)h \(m)m"
+                    }
+                    menu.addItem(styledItem("  ⏳ Hours left:  \(hoursStr)"))
+                    menu.addItem(styledItem("  🌅 SOC at sunrise: \(Int(socAtSunrise))%"))
                 }
-                menu.addItem(styledItem("  ⏳ Hours left:     \(hoursStr)"))
-                menu.addItem(styledItem("  📉 Drain rate:     \(Int(drainRate))W"))
-                menu.addItem(styledItem("  🌅 SOC at sunrise: \(Int(socAtSunrise))%"))
 
                 // Show next sun event — sunset during day, sunrise at night
                 if let sun = json["sun"] as? [String: Any] {
@@ -177,9 +202,13 @@ class SolarMenuBar: NSObject, NSApplicationDelegate {
                     menu.addItem(styledItem("  ☀️ Sun: \(sunriseTime) — \(sunsetTime)", color: .secondaryLabelColor, size: 11))
                 }
 
-                if willDeplete {
+                if willDeplete && !isNight {
                     menu.addItem(NSMenuItem.separator())
-                    menu.addItem(styledItem("  🚨 BATTERY WILL RUN OUT", bold: true, color: .systemRed, size: 14))
+                    if let emptyTime = emptyAt {
+                        menu.addItem(styledItem("  🚨 BATTERY EMPTY AT \(emptyTime)", bold: true, color: .systemRed, size: 14))
+                    } else {
+                        menu.addItem(styledItem("  🚨 BATTERY WILL RUN OUT", bold: true, color: .systemRed, size: 14))
+                    }
                 }
             }
 
